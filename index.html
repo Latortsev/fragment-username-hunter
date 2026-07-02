@@ -307,11 +307,7 @@
   <h1>Fragment Username Hunter</h1>
   <p class="subtitle">Ищет юзернеймы Telegram: свободные, занятые и выставленные на аукцион</p>
 
-  <div class="cors-warning" id="corsWarn">
-    ⚠️ <strong>Важно:</strong> нужно расширение «Allow CORS» / «CORS Unblock» (включите его!) или запуск Chrome с флагом.<br>
-    <strong>Chrome/Edge:</strong> <code>--disable-web-security --user-data-dir=/tmp/chrome-dev</code>
-    <button onclick="document.getElementById(&#39;corsWarn&#39;).style.display=&#39;none&#39;" style="margin-top:6px;font-size:11px;padding:3px 8px">Понял, скрыть</button>
-  </div>
+
 
   <!-- Quick check -->
   <div class="card">
@@ -532,15 +528,28 @@ function buildQueue(lenF, themeF, structF) {
 // "sold"/"taken" = registered and not for sale
 async function checkFragment(username) {
   try {
-    const url = `https://fragment.com/username/${username.toLowerCase()}`;
-    const res = await fetch(url, {
-      mode: 'cors',
-      headers: { 'Accept': 'text/html,application/xhtml+xml' }
-    });
+    const target = `https://fragment.com/username/${username.toLowerCase()}`;
+    // Используем публичные CORS-прокси для обхода ограничений без расширений
+    const proxies = [
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
+      `https://corsproxy.io/?${encodeURIComponent(target)}`,
+      `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`
+    ];
 
-    if (!res.ok) return { status: 'error', msg: `HTTP ${res.status}` };
+    let html = null;
+    for (const proxyUrl of proxies) {
+      try {
+        const res = await fetch(proxyUrl, {
+          headers: { 'Accept': 'text/html,application/xhtml+xml' }
+        });
+        if (res.ok) {
+          html = await res.text();
+          break;
+        }
+      } catch(e) { continue; }
+    }
 
-    const html = await res.text();
+    if (!html) return { status: 'error', msg: 'Все прокси недоступны' };
 
     // ── Parse price from HTML ──────────────────────────────
     // Fragment shows prices like "1,000 TON" or "500 TON" in various places
