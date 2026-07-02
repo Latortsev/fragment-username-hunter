@@ -528,25 +528,35 @@ function buildQueue(lenF, themeF, structF) {
 // "sold"/"taken" = registered and not for sale
 async function checkFragment(username) {
   try {
+    // Используем публичные CORS-прокси с race: первый ответивший выигрывает
     const target = `https://fragment.com/username/${username.toLowerCase()}`;
-    // Используем публичные CORS-прокси для обхода ограничений без расширений
-    const proxies = [
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
-      `https://corsproxy.io/?${encodeURIComponent(target)}`,
-      `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`
+    const enc = encodeURIComponent(target);
+    const proxyUrls = [
+      `https://api.allorigins.win/raw?url=${enc}`,
+      `https://corsproxy.io/?${enc}`,
+      `https://api.codetabs.com/v1/proxy?quest=${enc}`,
+      `https://thingproxy.freeboard.io/fetch/${target}`,
+      `https://cors-anywhere.herokuapp.com/${target}`
     ];
 
     let html = null;
-    for (const proxyUrl of proxies) {
-      try {
-        const res = await fetch(proxyUrl, {
-          headers: { 'Accept': 'text/html,application/xhtml+xml' }
-        });
-        if (res.ok) {
-          html = await res.text();
-          break;
-        }
-      } catch(e) { continue; }
+    try {
+      // Race: берём первый успешный ответ, остальные отменяются
+      html = await Promise.any(
+        proxyUrls.map(async (url) => {
+          const res = await fetch(url, { headers: { 'Accept': 'text/html,application/xhtml+xml' } });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.text();
+        })
+      );
+    } catch(e) {
+      // Все прокси упали — fallback последовательный
+      for (const url of proxyUrls) {
+        try {
+          const res = await fetch(url, { headers: { 'Accept': 'text/html,application/xhtml+xml' } });
+          if (res.ok) { html = await res.text(); break; }
+        } catch(_) { continue; }
+      }
     }
 
     if (!html) return { status: 'error', msg: 'Все прокси недоступны' };
@@ -782,7 +792,7 @@ async function startHunt() {
   statusEl.textContent = `Очередь: ${queue.length} кандидатов. Ищем…`;
 
   // Параллельная проверка: 20 одновременных запросов вместо последовательных с задержкой 450мс
-  const CONCURRENCY = 20;
+  const CONCURRENCY = 50;
   let idx = 0;
 
   async function worker() {
