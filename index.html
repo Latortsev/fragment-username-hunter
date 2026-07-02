@@ -781,52 +781,66 @@ async function startHunt() {
 
   statusEl.textContent = `Очередь: ${queue.length} кандидатов. Ищем…`;
 
-  for (const item of queue) {
-    const limitReached = GOAL > 0 && cntFree >= GOAL;
-    if (!running || limitReached) break;
+  // Параллельная проверка: 20 одновременных запросов вместо последовательных с задержкой 450мс
+  const CONCURRENCY = 20;
+  let idx = 0;
 
-    const goalLabel = GOAL > 0 ? ` из ${GOAL}` : '';
-    statusEl.textContent = `Проверяем @${item.name}… свободных: ${cntFree}${goalLabel}`;
-    metaEl.textContent = `Проверено: ${checked} | Очередь: ${queue.length - checked}`;
+  async function worker() {
+    while (running && idx < queue.length) {
+      const limitReached = GOAL > 0 && cntFree >= GOAL;
+      if (limitReached) { running = false; break; }
 
-    if (GOAL > 0) pb.style.width = Math.min(100, Math.round(cntFree / GOAL * 100)) + '%';
+      const currentItem = queue[idx++];
+      if (!currentItem) break;
 
-    const result = await checkFragment(item.name);
-    checked++;
+      const result = await checkFragment(currentItem.name);
+      checked++;
 
-    if (result.status === 'error') {
-      errorCount++;
-      if (errorCount >= 3) {
-        statusEl.textContent = `⚠️ Ошибки CORS — включите расширение «Allow CORS» и обновите страницу.`;
-        metaEl.textContent = `Проверено: ${checked}`;
-        stopHunt();
-        return;
+      if (result.status === 'error') {
+        errorCount++;
+        if (errorCount >= 10) {
+          statusEl.textContent = `⚠️ Много ошибок прокси. Попробуйте позже.`;
+          metaEl.textContent = `Проверено: ${checked}`;
+          running = false;
+          return;
+        }
+        continue;
+      } else {
+        errorCount = 0;
       }
-      await new Promise(r => setTimeout(r, 600));
-      continue;
-    } else {
-      errorCount = 0;
+
+      allResults.push({ name: currentItem.name, status: result.status, price: result.price || null, tags: currentItem.tags, score: currentItem.score });
+
+      if (result.status === 'available') {
+        cntFree++;
+        addCard(currentItem.name, 'available', result.price, currentItem.tags, currentItem.score);
+      } else if (result.status === 'sale') {
+        cntSale++;
+        addCard(currentItem.name, 'sale', result.price, currentItem.tags, currentItem.score);
+      } else if (result.status === 'taken') {
+        cntTaken++;
+        addCard(currentItem.name, 'taken', null, currentItem.tags, currentItem.score);
+      }
+
+      updateCounters(cntFree, cntSale, cntTaken);
+
+      // Обновляем UI каждые несколько проверок, чтобы не блокировать рендеринг
+      if (checked % 5 === 0) {
+        const goalLabel = GOAL > 0 ? ` из ${GOAL}` : '';
+        statusEl.textContent = `Проверяем… свободных: ${cntFree}${goalLabel}`;
+        metaEl.textContent = `Проверено: ${checked} | Очередь: ${queue.length - checked} | Потоков: ${CONCURRENCY}`;
+        if (GOAL > 0) pb.style.width = Math.min(100, Math.round(cntFree / GOAL * 100)) + '%';
+        await new Promise(r => setTimeout(r, 0)); // yield to UI
+      }
     }
-
-    // Store result
-    allResults.push({ name: item.name, status: result.status, price: result.price || null, tags: item.tags, score: item.score });
-
-    if (result.status === 'available') {
-      cntFree++;
-      addCard(item.name, 'available', result.price, item.tags, item.score);
-      if (GOAL > 0) pb.style.width = Math.min(100, Math.round(cntFree / GOAL * 100)) + '%';
-    } else if (result.status === 'sale') {
-      cntSale++;
-      addCard(item.name, 'sale', result.price, item.tags, item.score);
-    } else if (result.status === 'taken') {
-      cntTaken++;
-      addCard(item.name, 'taken', null, item.tags, item.score);
-    }
-
-    updateCounters(cntFree, cntSale, cntTaken);
-
-    await new Promise(r => setTimeout(r, 450));
   }
+
+  // Запускаем пул воркеров
+  const workers = [];
+  for (let w = 0; w < CONCURRENCY; w++) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
 
   running = false;
   document.getElementById('stopBtn').style.display = 'none';
